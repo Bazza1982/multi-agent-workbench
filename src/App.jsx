@@ -142,25 +142,6 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand, custom
           >
             💾 保存记忆
           </button>
-          <button 
-            className="memory-btn-inline compact" 
-            onClick={async () => {
-              try {
-                const resp = await fetch(`/api/compact/${agent.id}`, { method: 'POST' });
-                const result = await resp.json();
-                if (result.ok) {
-                  alert('✅ Compact 命令已发送！');
-                } else {
-                  alert('❌ Compact 失败: ' + (result.error || 'unknown'));
-                }
-              } catch (e) {
-                alert('❌ Compact 请求失败: ' + e.message);
-              }
-            }}
-            title="执行 /compact 压缩上下文"
-          >
-            🗜️ 压缩
-          </button>
         </div>
       )}
 

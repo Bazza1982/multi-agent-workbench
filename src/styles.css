@@ -90,25 +90,14 @@ select { background: #0f1116; color: var(--text); border: 1px solid var(--border
   transition: all 0.15s;
   white-space: nowrap;
   margin-top: 0;
-}
-.memory-btn-inline.save {
   margin-left: auto;
   background: rgba(46, 204, 113, 0.2);
   border: 1px solid rgba(46, 204, 113, 0.5);
   color: #2ecc71;
 }
-.memory-btn-inline.save:hover {
+.memory-btn-inline:hover {
   background: rgba(46, 204, 113, 0.3);
   border-color: #2ecc71;
-}
-.memory-btn-inline.compact {
-  background: rgba(155, 89, 182, 0.2);
-  border: 1px solid rgba(155, 89, 182, 0.5);
-  color: #9b59b6;
-}
-.memory-btn-inline.compact:hover {
-  background: rgba(155, 89, 182, 0.3);
-  border-color: #9b59b6;
 }
 
 @media (max-width: 1200px) { .grid-3,.grid-6,.grid-9 { grid-template-columns: repeat(2,1fr); } }

@@ -153,18 +153,19 @@ class GatewayClient {
             this.challengeNonce = frame.payload?.nonce;
             debugLog('Got challenge nonce:', this.challengeNonce);
             
-            // 发送 connect 请求 - 使用 token 认证，请求必要的权限
+            // 发送 connect 请求 - 使用 cli mode 获取完整权限
             const connectParams = {
               minProtocol: 3,
               maxProtocol: 3,
               client: {
-                id: 'webchat',  // 使用官方允许的 client id
+                id: 'cli',  // 使用官方 cli client id
                 version: '1.0.0',
                 platform: 'workbench',
-                mode: 'webchat',  // 使用官方允许的 mode
+                mode: 'cli',  // 必须是: cli|node|ui|test|webchat|backend|probe
               },
+              role: 'operator',
               auth: token ? { token } : undefined,
-              scopes: ['operator.write', 'operator.read', 'chat.send', 'chat.history'],
+              scopes: ['operator.read', 'operator.write'],
             };
 
             this.send({
