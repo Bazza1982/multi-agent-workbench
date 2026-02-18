@@ -6,6 +6,71 @@ import { execSync } from 'node:child_process';
 import WebSocket from 'ws';
 import { getAgents, getAgentMap } from './agents.js';
 
+// ==================== Model Context Window Lookup ====================
+// Real context window sizes for known models (tokens)
+const MODEL_CONTEXT_WINDOWS = {
+  // Anthropic Claude models
+  'claude-opus-4-6': 200000,
+  'claude-opus-4-5': 200000,
+  'claude-opus-4-1': 200000,
+  'claude-opus-4-0': 200000,
+  'claude-opus-4': 200000,
+  'claude-sonnet-4-5': 200000,
+  'claude-sonnet-4-0': 200000,
+  'claude-sonnet-4': 200000,
+  'claude-haiku-4-5': 200000,
+  'claude-3-opus': 200000,
+  'claude-3-5-sonnet': 200000,
+  'claude-3-7-sonnet': 200000,
+  'claude-3-sonnet': 200000,
+  'claude-3-haiku': 200000,
+  // DeepSeek
+  'deepseek-v3': 128000,
+  'deepseek-v3.2': 128000,
+  'deepseek-v3.2-exp': 128000,
+  // OpenAI / Codex
+  'gpt-5': 128000,
+  'gpt-5.1': 128000,
+  'gpt-5.2': 128000,
+  'gpt-5.3': 128000,
+  'gpt-5.1-codex': 128000,
+  'gpt-5.2-codex': 128000,
+  'gpt-5.3-codex': 128000,
+  // Kimi
+  'kimi-k2': 128000,
+  'kimi-k2.5': 128000,
+  // GLM
+  'glm-5': 128000,
+  // Default fallback
+  'default': 200000,
+};
+
+/**
+ * Look up the real context window for a model
+ * @param {string} modelString - Full model string like "anthropic/claude-opus-4-5"
+ * @returns {number} Context window size in tokens
+ */
+function lookupModelContextWindow(modelString) {
+  if (!modelString) return MODEL_CONTEXT_WINDOWS.default;
+  
+  const model = modelString.toLowerCase();
+  
+  // Try exact match first (without provider prefix)
+  const modelName = model.includes('/') ? model.split('/').pop() : model;
+  if (MODEL_CONTEXT_WINDOWS[modelName]) {
+    return MODEL_CONTEXT_WINDOWS[modelName];
+  }
+  
+  // Try partial match
+  for (const [key, value] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
+    if (key !== 'default' && model.includes(key)) {
+      return value;
+    }
+  }
+  
+  return MODEL_CONTEXT_WINDOWS.default;
+}
+
 // 日志文件路径
 const LOG_FILE = path.join(import.meta.dirname, '..', 'debug.log');
 
@@ -380,14 +445,19 @@ function getSessionInfo(agent) {
     const data = JSON.parse(fs.readFileSync(sessionsPath, 'utf8'));
     const row = data[agent.sessionKey] || {};
     const model = row.modelProvider && row.model ? `${row.modelProvider}/${row.model}` : (row.model || 'unknown');
+    
+    // Use real model context window instead of config value
+    const realContextTokens = lookupModelContextWindow(model);
+    
     return {
       model,
       totalTokens: row.totalTokens || 0,
-      contextTokens: row.contextTokens || 0,
+      contextTokens: realContextTokens,  // Use looked-up value
+      configContextTokens: row.contextTokens || 0,  // Keep original config value for reference
       updatedAt: row.updatedAt || null,
     };
   } catch {
-    return { model: 'unknown', totalTokens: 0, contextTokens: 0, updatedAt: null };
+    return { model: 'unknown', totalTokens: 0, contextTokens: 200000, configContextTokens: 0, updatedAt: null };
   }
 }
 
