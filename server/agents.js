@@ -1,52 +1,62 @@
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs';
 
 const HOME = os.homedir();
 const BASE = path.join(HOME, '.openclaw', 'agents');
+const CONFIG_PATH = path.join(HOME, '.openclaw', 'openclaw.json');
 
-export const AGENTS = [
-  {
-    id: 'main',
-    name: '主小夏',
-    emoji: '🌸',
-    sessionKey: 'agent:main:main',
-    transcriptPath: path.join(BASE, 'main', 'sessions', '6c9657cd-8c02-4835-a709-c6132648d003.jsonl'),
-  },
-  {
-    id: 'coder',
-    name: '码农小夏',
-    emoji: '🔧',
-    sessionKey: 'agent:coder:main',
-    transcriptPath: path.join(BASE, 'coder', 'sessions', 'd7611513-eb10-4e91-934d-118551d19f85.jsonl'),
-  },
-  {
-    id: 'helper',
-    name: '帮手小夏',
-    emoji: '🧰',
-    sessionKey: 'agent:helper:main',
-    transcriptPath: path.join(BASE, 'helper', 'sessions', '321c0f4d-1236-41d7-bee9-27f086cd3e4d.jsonl'),
-  },
-  {
-    id: 'opus',
-    name: 'Opus小夏',
-    emoji: '🎼',
-    sessionKey: 'agent:opus:main',
-    transcriptPath: path.join(BASE, 'opus', 'sessions', 'f15418ad-44e7-430a-9722-3d3f12701e9c.jsonl'),
-  },
-  {
-    id: 'wudi',
-    name: '无敌小夏',
-    emoji: '⚔️',
-    sessionKey: 'agent:wudi:main',
-    transcriptPath: path.join(BASE, 'wudi', 'sessions', 'b3dbdf5b-c169-4eb0-81e5-22193056de45.jsonl'),
-  },
-  {
-    id: 'xiaoying',
-    name: '小颖',
-    emoji: '🎀',
-    sessionKey: 'agent:xiaoying:main',
-    transcriptPath: path.join(BASE, 'xiaoying', 'sessions', '8b474b8b-282f-47f8-9e20-562e4f91c93c.jsonl'),
-  },
-];
+// 动态查找最新的session文件
+function findLatestSession(agentId) {
+  const sessionsDir = path.join(BASE, agentId, 'sessions');
+  try {
+    const files = fs.readdirSync(sessionsDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({
+        name: f,
+        path: path.join(sessionsDir, f),
+        mtime: fs.statSync(path.join(sessionsDir, f)).mtime
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+    return files[0]?.path || null;
+  } catch {
+    return null;
+  }
+}
 
+// 从 openclaw.json 动态读取 agents 列表
+function loadAgentsFromConfig() {
+  try {
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    // agents 结构: { defaults: {...}, list: [{id, name, ...}, ...] }
+    const agentsList = config.agents?.list || [];
+    
+    return agentsList.map(agent => ({
+      id: agent.id,
+      name: agent.name || agent.id,
+      emoji: agent.emoji || '🤖',
+      sessionKey: `agent:${agent.id}:main`,
+      get transcriptPath() { return findLatestSession(agent.id); },
+    }));
+  } catch (e) {
+    console.error('Failed to load agents from config:', e.message);
+    // 返回空数组而不是失败
+    return [];
+  }
+}
+
+// 动态导出 - 每次调用时重新读取配置
+export function getAgents() {
+  return loadAgentsFromConfig();
+}
+
+// 为了向后兼容，AGENTS 变量在初次加载时读取
+// 但推荐使用 getAgents() 以获取最新配置
+export const AGENTS = loadAgentsFromConfig();
+
+export function getAgentMap() {
+  return new Map(getAgents().map((a) => [a.id, a]));
+}
+
+// 向后兼容
 export const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));

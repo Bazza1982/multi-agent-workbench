@@ -19,11 +19,37 @@ function normalizeMessages(arr = []) {
   return arr.map((m) => ({ role: m.role, content: m.content || '' })).filter((m) => m.content);
 }
 
-function AgentPanel({ agent, session, state, setState, onSend, onCommand }) {
+// 发送音效 - 使用Web Audio API生成清脆的提示音
+function playSendSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    
+    oscillator.frequency.setValueAtTime(880, ctx.currentTime); // A5音
+    oscillator.frequency.setValueAtTime(1100, ctx.currentTime + 0.1); // 上升
+    
+    gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+    
+    oscillator.start(ctx.currentTime);
+    oscillator.stop(ctx.currentTime + 0.2);
+  } catch (e) {
+    console.log('Audio not supported');
+  }
+}
+
+function AgentPanel({ agent, session, state, setState, onSend, onCommand, customName }) {
+  const displayName = customName || agent.name;
   const [input, setInput] = useState('');
   const [imagePreview, setImagePreview] = useState(null);
   const [reasoning, setReasoning] = useState('off');
   const [thinkingLevel, setThinkingLevel] = useState('low');
+  const [sending, setSending] = useState(false);
+  const [sendSuccess, setSendSuccess] = useState(false);
   const chatRef = useRef(null);
 
   useEffect(() => {
@@ -37,9 +63,29 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand }) {
   const send = async () => {
     const text = input.trim();
     if (!text && !imagePreview) return;
-    await onSend(agent, text, imagePreview);
+    if (sending) return;
+    
+    // 立即清空输入框并显示发送状态
+    const msgText = text;
+    const msgImage = imagePreview;
     setInput('');
     setImagePreview(null);
+    setSending(true);
+    
+    try {
+      await onSend(agent, msgText, msgImage);
+      // 发送成功反馈 - 快速闪烁
+      setSendSuccess(true);
+      playSendSound();
+      setTimeout(() => setSendSuccess(false), 150);
+    } catch (err) {
+      console.error('Send failed:', err);
+      // 发送失败，恢复输入内容
+      setInput(msgText);
+      setImagePreview(msgImage);
+    } finally {
+      setSending(false);
+    }
   };
 
   const onKeyDown = (e) => {
@@ -66,7 +112,7 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand }) {
   return (
     <section className="panel">
       <div className="panel-header">
-        <div className="title">{agent.emoji} {agent.name}</div>
+        <div className="title">{agent.emoji} {displayName} <span className="agent-id">({agent.id})</span></div>
         <div className="sub">{session?.model || 'unknown'}</div>
       </div>
 
@@ -98,7 +144,7 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand }) {
       <div className="chat" ref={chatRef}>
         {state.messages.slice(-80).map((m, idx) => (
           <div key={`${m.role}-${idx}`} className={`msg ${m.role}`}>
-            <b>{m.role === 'user' ? '你' : agent.name}:</b> {m.content}
+            <b>{m.role === 'user' ? '你' : displayName}:</b> {m.content}
           </div>
         ))}
       </div>
@@ -109,42 +155,98 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand }) {
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        placeholder={`给 ${agent.name} 发送消息（Enter发送 / Shift+Enter换行 / Ctrl+V粘贴图片）`}
+        disabled={sending}
+        placeholder={`给 ${displayName} 发送消息（Enter发送 / Shift+Enter换行 / Ctrl+V粘贴图片）`}
       />
-      <button className="send" onClick={send}>发送</button>
+      <button 
+        className={`send ${sending ? 'sending' : ''} ${sendSuccess ? 'success' : ''}`} 
+        onClick={send}
+        disabled={sending}
+      >
+        {sending ? '⋯' : '发送'}
+      </button>
     </section>
   );
 }
 
+// localStorage 键
+const STORAGE_KEY_SELECTED = 'workbench-selected';
+const STORAGE_KEY_NAMES = 'workbench-custom-names';
+
 export default function App() {
   const [agents, setAgents] = useState([]);
-  const [selected, setSelected] = useState(['main', 'coder']);
+  const [selected, setSelected] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_SELECTED);
+      return saved ? JSON.parse(saved) : ['helper', 'main'];
+    } catch { return ['helper', 'main']; }
+  });
+  const [customNames, setCustomNames] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_NAMES);
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+  const [editingId, setEditingId] = useState(null);
+  const [editValue, setEditValue] = useState('');
   const [sessions, setSessions] = useState({});
   const [system, setSystem] = useState(null);
   const [stateMap, setStateMap] = useState({});
+  const [refreshing, setRefreshing] = useState(false);
   const pollOffsets = useRef({});
 
-  useEffect(() => {
-    (async () => {
+  // 加载 agents 列表
+  const loadAgents = async (isInitial = false) => {
+    console.log('loadAgents called, isInitial:', isInitial);
+    setRefreshing(true);
+    try {
       const [cfg, sys, sess] = await Promise.all([
         fetch('/api/config').then((r) => r.json()),
         fetch('/api/system').then((r) => r.json()),
         fetch('/api/sessions').then((r) => r.json()),
       ]);
-      setAgents(cfg.agents || []);
+      
+      const newAgents = cfg.agents || [];
+      console.log('Loaded agents:', newAgents.map(a => a.id));
+      setAgents(newAgents);
       setSystem(sys);
       setSessions(sess.sessions || {});
-      const ids = (cfg.agents || []).slice(0, 2).map((a) => a.id);
-      if (ids.length) setSelected(ids);
+      
+      // 只有初始加载且没有保存的 selected 时才使用默认值
+      if (isInitial) {
+        const savedSelected = localStorage.getItem(STORAGE_KEY_SELECTED);
+        if (!savedSelected) {
+          const ids = newAgents.slice(0, 2).map((a) => a.id);
+          if (ids.length) setSelected(ids);
+        }
+      }
 
-      const initStates = {};
-      for (const a of cfg.agents || []) {
+      // 为新 agent 加载 transcript
+      const newStates = {};
+      for (const a of newAgents) {
         const transcript = await fetch(`/api/transcript/${a.id}?limit=60`).then((r) => r.json());
         pollOffsets.current[a.id] = transcript.offset || 0;
-        initStates[a.id] = { messages: normalizeMessages(transcript.messages), thinking: transcript.thinking || '' };
+        newStates[a.id] = { messages: normalizeMessages(transcript.messages), thinking: transcript.thinking || '' };
       }
-      setStateMap(initStates);
-    })();
+      setStateMap(prev => ({ ...prev, ...newStates }));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // 保存 selected 到 localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_SELECTED, JSON.stringify(selected));
+  }, [selected]);
+
+  // 保存 customNames 到 localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_NAMES, JSON.stringify(customNames));
+  }, [customNames]);
+
+  // 初始加载
+  useEffect(() => {
+    loadAgents(true);
   }, []);
 
   useEffect(() => {
@@ -217,16 +319,29 @@ export default function App() {
         <div className="metrics">
           <span>CPU: {system?.cpuPercent ?? '--'}%</span>
           <span>RAM: {system ? `${system.ramUsedGb}/${system.ramTotalGb} GB` : '--'}</span>
-          <span>GPU: {system?.gpu?.available ? 'available' : 'N/A'}</span>
+          <span>GPU: {system?.gpu?.available 
+            ? `${system.gpu.usage}% (${Math.round(system.gpu.memoryUsed/1024*10)/10}/${Math.round(system.gpu.memoryTotal/1024*10)/10}GB, ${system.gpu.temperature}°C)` 
+            : 'N/A'}</span>
           <span>Gateway: {system?.gateway?.online ? '🟢 Online' : '🔴 Offline'}</span>
         </div>
       </header>
 
       <div className="selector">
+        <button 
+          className={`refresh-btn ${refreshing ? 'refreshing' : ''}`}
+          onClick={() => loadAgents(false)}
+          disabled={refreshing}
+          title="刷新 Agent 列表"
+        >
+          {refreshing ? '⏳' : '🔄'}
+        </button>
         {agents.map((a) => {
           const checked = selected.includes(a.id);
+          const displayName = customNames[a.id] || a.name;
+          const isEditing = editingId === a.id;
+          
           return (
-            <label key={a.id}>
+            <label key={a.id} className="agent-selector">
               <input
                 type="checkbox"
                 checked={checked}
@@ -236,7 +351,47 @@ export default function App() {
                     return prev.filter((id) => id !== a.id);
                   });
                 }}
-              /> {a.emoji} {a.name}
+              />
+              <span className="agent-emoji">{a.emoji}</span>
+              {isEditing ? (
+                <input
+                  type="text"
+                  className="name-edit"
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onBlur={() => {
+                    if (editValue.trim()) {
+                      setCustomNames(prev => ({ ...prev, [a.id]: editValue.trim() }));
+                    }
+                    setEditingId(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      if (editValue.trim()) {
+                        setCustomNames(prev => ({ ...prev, [a.id]: editValue.trim() }));
+                      }
+                      setEditingId(null);
+                    } else if (e.key === 'Escape') {
+                      setEditingId(null);
+                    }
+                  }}
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span 
+                  className="agent-name-editable"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setEditingId(a.id);
+                    setEditValue(displayName);
+                  }}
+                  title="点击修改名称"
+                >
+                  {displayName}
+                </span>
+              )}
             </label>
           );
         })}
@@ -252,6 +407,7 @@ export default function App() {
             setState={(x) => setStateMap((p) => ({ ...p, [a.id]: x }))}
             onSend={sendMessage}
             onCommand={sendCommand}
+            customName={customNames[a.id]}
           />
         ))}
       </main>

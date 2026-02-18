@@ -2,14 +2,99 @@ import express from 'express';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { AGENTS, AGENT_MAP } from './agents.js';
+import { execSync } from 'node:child_process';
+import WebSocket from 'ws';
+import { getAgents, getAgentMap } from './agents.js';
+
+// 日志文件路径
+const LOG_FILE = path.join(import.meta.dirname, '..', 'debug.log');
+
+function debugLog(...args) {
+  const timestamp = new Date().toISOString();
+  const msg = `[${timestamp}] ${args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : a).join(' ')}\n`;
+  fs.appendFileSync(LOG_FILE, msg);
+  console.log(...args);
+}
+
+// CPU使用率缓存（Windows需要采样计算）
+let lastCpuInfo = null;
+let lastCpuTime = 0;
+
+function getCpuUsage() {
+  const cpus = os.cpus();
+  const now = Date.now();
+  
+  let totalIdle = 0;
+  let totalTick = 0;
+  
+  for (const cpu of cpus) {
+    for (const type in cpu.times) {
+      totalTick += cpu.times[type];
+    }
+    totalIdle += cpu.times.idle;
+  }
+  
+  if (!lastCpuInfo || now - lastCpuTime > 5000) {
+    lastCpuInfo = { idle: totalIdle, total: totalTick };
+    lastCpuTime = now;
+    return null;
+  }
+  
+  const idleDiff = totalIdle - lastCpuInfo.idle;
+  const totalDiff = totalTick - lastCpuInfo.total;
+  
+  lastCpuInfo = { idle: totalIdle, total: totalTick };
+  lastCpuTime = now;
+  
+  if (totalDiff === 0) return 0;
+  return ((1 - idleDiff / totalDiff) * 100);
+}
+
+// GPU信息缓存
+let gpuCache = { data: null, time: 0 };
+
+function getGpuInfo() {
+  const now = Date.now();
+  if (gpuCache.data && now - gpuCache.time < 2000) {
+    return gpuCache.data;
+  }
+  
+  try {
+    const output = execSync(
+      'nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits',
+      { encoding: 'utf8', timeout: 5000, windowsHide: true }
+    ).trim();
+    
+    if (output) {
+      const parts = output.split(',').map(s => s.trim());
+      if (parts.length >= 5) {
+        gpuCache.data = {
+          available: true,
+          name: parts[0],
+          usage: parseFloat(parts[1]) || 0,
+          memoryUsed: parseInt(parts[2]) || 0,
+          memoryTotal: parseInt(parts[3]) || 0,
+          temperature: parseInt(parts[4]) || 0,
+        };
+        gpuCache.time = now;
+        return gpuCache.data;
+      }
+    }
+  } catch {
+    // nvidia-smi不可用
+  }
+  
+  gpuCache.data = { available: false };
+  gpuCache.time = now;
+  return gpuCache.data;
+}
 
 const app = express();
 const PORT = 3001;
 const GATEWAY_HTTP = process.env.OPENCLAW_GATEWAY_URL || 'http://localhost:18789';
 const GATEWAY_WS = GATEWAY_HTTP.replace(/^http/i, 'ws');
 
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 function readGatewayToken() {
   if (process.env.OPENCLAW_TOKEN) return process.env.OPENCLAW_TOKEN;
@@ -21,6 +106,184 @@ function readGatewayToken() {
     return null;
   }
 }
+
+// ==================== WebSocket Gateway 客户端 ====================
+
+class GatewayClient {
+  constructor() {
+    this.ws = null;
+    this.connected = false;
+    this.requestId = 0;
+    this.pendingRequests = new Map();
+    this.challengeNonce = null;
+  }
+
+  async connect() {
+    if (this.ws && this.connected) return true;
+
+    return new Promise((resolve, reject) => {
+      const token = readGatewayToken();
+      const wsUrl = token ? `${GATEWAY_WS}/?token=${encodeURIComponent(token)}` : GATEWAY_WS;
+      
+      debugLog('Connecting to Gateway WebSocket:', GATEWAY_WS);
+      // 设置 origin header 以通过 CORS 检查
+      this.ws = new WebSocket(wsUrl, {
+        origin: 'http://localhost:18789',
+        headers: {
+          'Origin': 'http://localhost:18789',
+        },
+      });
+
+      const timeout = setTimeout(() => {
+        this.ws?.close();
+        reject(new Error('WebSocket connection timeout'));
+      }, 10000);
+
+      this.ws.on('open', () => {
+        debugLog('WebSocket opened, waiting for challenge...');
+      });
+
+      this.ws.on('message', async (data) => {
+        try {
+          const frame = JSON.parse(data.toString());
+          debugLog('WS received:', JSON.stringify(frame).slice(0, 500));
+
+          // 处理 connect.challenge 事件
+          if (frame.type === 'event' && frame.event === 'connect.challenge') {
+            this.challengeNonce = frame.payload?.nonce;
+            debugLog('Got challenge nonce:', this.challengeNonce);
+            
+            // 发送 connect 请求 - 使用 token 认证，请求必要的权限
+            const connectParams = {
+              minProtocol: 3,
+              maxProtocol: 3,
+              client: {
+                id: 'webchat',  // 使用官方允许的 client id
+                version: '1.0.0',
+                platform: 'workbench',
+                mode: 'webchat',  // 使用官方允许的 mode
+              },
+              auth: token ? { token } : undefined,
+              scopes: ['operator.write', 'operator.read', 'chat.send', 'chat.history'],
+            };
+
+            this.send({
+              type: 'req',
+              id: 'connect-1',
+              method: 'connect',
+              params: connectParams,
+            });
+          }
+
+          // 处理 connect 响应
+          if (frame.type === 'res' && frame.id === 'connect-1') {
+            clearTimeout(timeout);
+            if (frame.ok) {
+              this.connected = true;
+              debugLog('✅ WebSocket connected successfully!');
+              resolve(true);
+            } else {
+              debugLog('❌ Connect failed:', frame.error);
+              reject(new Error(frame.error?.message || 'Connect failed'));
+            }
+          }
+
+          // 处理 hello-ok（有些版本直接发 hello-ok）
+          if (frame.type === 'hello-ok') {
+            clearTimeout(timeout);
+            this.connected = true;
+            debugLog('✅ WebSocket connected (hello-ok)!');
+            resolve(true);
+          }
+
+          // 处理普通响应
+          if (frame.type === 'res' && frame.id !== 'connect-1') {
+            const pending = this.pendingRequests.get(frame.id);
+            if (pending) {
+              this.pendingRequests.delete(frame.id);
+              if (frame.ok) {
+                pending.resolve(frame.payload);
+              } else {
+                pending.reject(new Error(frame.error?.message || 'Request failed'));
+              }
+            }
+          }
+
+        } catch (e) {
+          debugLog('WS message parse error:', e);
+        }
+      });
+
+      this.ws.on('error', (err) => {
+        debugLog('WebSocket error:', err.message);
+        clearTimeout(timeout);
+        this.connected = false;
+        reject(err);
+      });
+
+      this.ws.on('close', () => {
+        debugLog('WebSocket closed');
+        this.connected = false;
+        this.ws = null;
+      });
+    });
+  }
+
+  send(frame) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket not connected');
+    }
+    const data = JSON.stringify(frame);
+    debugLog('WS sending:', data.slice(0, 500));
+    this.ws.send(data);
+  }
+
+  async request(method, params, timeoutMs = 120000) {
+    if (!this.connected) {
+      await this.connect();
+    }
+
+    const id = `req-${++this.requestId}`;
+    
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`Request timeout: ${method}`));
+      }, timeoutMs);
+
+      this.pendingRequests.set(id, {
+        resolve: (payload) => {
+          clearTimeout(timeout);
+          resolve(payload);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        },
+      });
+
+      this.send({
+        type: 'req',
+        id,
+        method,
+        params,
+      });
+    });
+  }
+
+  close() {
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.connected = false;
+  }
+}
+
+// 全局 Gateway 客户端实例
+let gatewayClient = new GatewayClient();
+
+// ==================== Transcript 读取函数 ====================
 
 function parseMessageRecord(line) {
   if (!line?.trim()) return null;
@@ -127,39 +390,43 @@ function getSessionInfo(agent) {
   }
 }
 
+// ==================== API 路由 ====================
+
 app.get('/api/config', (_req, res) => {
   res.json({
     gatewayHttp: GATEWAY_HTTP,
     gatewayWs: GATEWAY_WS,
     token: readGatewayToken(),
-    agents: AGENTS,
+    agents: getAgents(), // 动态读取最新配置
   });
 });
 
 app.get('/api/sessions', (_req, res) => {
-  const sessions = Object.fromEntries(AGENTS.map((a) => [a.id, getSessionInfo(a)]));
+  const agents = getAgents(); // 动态读取
+  const sessions = Object.fromEntries(agents.map((a) => [a.id, getSessionInfo(a)]));
   res.json({ sessions });
 });
 
 app.get('/api/transcript/:agentId', (req, res) => {
-  const agent = AGENT_MAP.get(req.params.agentId);
+  const agent = getAgentMap().get(req.params.agentId);
   if (!agent) return res.status(404).json({ error: 'agent not found' });
   const limit = Number(req.query.limit || 50);
   return res.json(readTranscriptRecent(agent.transcriptPath, Math.max(1, Math.min(limit, 200))));
 });
 
 app.get('/api/transcript/:agentId/poll', (req, res) => {
-  const agent = AGENT_MAP.get(req.params.agentId);
+  const agent = getAgentMap().get(req.params.agentId);
   if (!agent) return res.status(404).json({ error: 'agent not found' });
   const offset = Number(req.query.offset || 0);
   return res.json(readTranscriptIncrement(agent.transcriptPath, offset));
 });
 
 app.get('/api/system', async (_req, res) => {
-  const cpuPercent = os.loadavg()[0] > 0 ? (os.loadavg()[0] / os.cpus().length) * 100 : 0;
+  const cpuPercent = getCpuUsage() ?? 0;
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
   const ramUsed = totalMem - freeMem;
+  const gpu = getGpuInfo();
 
   let gatewayOnline = false;
   let gatewayStatus = 'offline';
@@ -178,11 +445,12 @@ app.get('/api/system', async (_req, res) => {
     cpuPercent: Number(cpuPercent.toFixed(1)),
     ramUsedGb: Number((ramUsed / 1024 ** 3).toFixed(2)),
     ramTotalGb: Number((totalMem / 1024 ** 3).toFixed(2)),
-    gpu: { available: false },
+    gpu,
     gateway: { online: gatewayOnline, status: gatewayStatus },
   });
 });
 
+// Chat API - 使用 WebSocket 发送图片消息
 app.post('/api/chat', async (req, res) => {
   try {
     const { agentId, sessionKey, messages, stream = false } = req.body || {};
@@ -190,6 +458,73 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'agentId and messages are required' });
     }
 
+    debugLog('\n=== /api/chat ===');
+    debugLog('agentId:', agentId);
+    debugLog('sessionKey:', sessionKey);
+
+    // 解析消息内容
+    const userMessage = messages[0];
+    let textContent = '';
+    const attachments = [];
+
+    if (typeof userMessage.content === 'string') {
+      textContent = userMessage.content;
+    } else if (Array.isArray(userMessage.content)) {
+      for (const part of userMessage.content) {
+        if (part.type === 'text') {
+          textContent += (textContent ? '\n' : '') + part.text;
+        } else if (part.type === 'image_url') {
+          // 处理 base64 图片
+          const url = part.image_url?.url || '';
+          if (url.startsWith('data:')) {
+            const match = url.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              const mimeType = match[1];
+              const base64Data = match[2];
+              attachments.push({
+                mimeType,
+                data: base64Data,
+                filename: `image_${Date.now()}.${mimeType.split('/')[1] || 'png'}`,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    debugLog('Text content:', textContent?.slice(0, 100));
+    debugLog('Attachments count:', attachments.length);
+
+    // 如果有图片，保存到文件并在消息中引用
+    if (attachments.length > 0) {
+      debugLog('Saving images to files...');
+      const savedPaths = [];
+      
+      for (const att of attachments) {
+        const ext = att.mimeType.split('/')[1] || 'png';
+        const filename = `workbench_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const MEDIA_DIR = path.join(os.homedir(), '.openclaw', 'media', 'inbound');
+        
+        // 确保目录存在
+        if (!fs.existsSync(MEDIA_DIR)) {
+          fs.mkdirSync(MEDIA_DIR, { recursive: true });
+        }
+        
+        const filePath = path.join(MEDIA_DIR, filename);
+        const buffer = Buffer.from(att.data, 'base64');
+        fs.writeFileSync(filePath, buffer);
+        savedPaths.push(filePath);
+        debugLog('Saved image to:', filePath);
+      }
+      
+      // 在消息中添加图片路径引用
+      const imageRefs = savedPaths.map(p => `[Image: ${p}]`).join('\n');
+      textContent = `${imageRefs}\n\n${textContent || '(请查看上面的图片)'}`;
+      debugLog('Message with image refs:', textContent.slice(0, 200));
+    }
+
+    // 纯文本消息或 WebSocket 失败时，使用 HTTP API
+    debugLog('Using HTTP API...');
     const token = readGatewayToken();
     const headers = {
       'Content-Type': 'application/json',
@@ -201,7 +536,7 @@ app.post('/api/chat', async (req, res) => {
     const payload = {
       model: `openclaw:${agentId}`,
       stream,
-      messages,
+      messages: [{ role: 'user', content: textContent || '(空消息)' }],
     };
 
     const resp = await fetch(`${GATEWAY_HTTP}/v1/chat/completions`, {
@@ -211,12 +546,33 @@ app.post('/api/chat', async (req, res) => {
     });
 
     const text = await resp.text();
+    debugLog('Gateway response status:', resp.status);
+    debugLog('Gateway response:', text.slice(0, 300));
+    debugLog('=== End ===\n');
+
     res.status(resp.status).type(resp.headers.get('content-type') || 'application/json').send(text);
+
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    debugLog('Chat error:', error);
+    res.status(500).json({ error: String(error.message || error) });
   }
 });
 
-app.listen(PORT, () => {
+// 启动服务器
+const server = app.listen(PORT, () => {
   console.log(`Workbench API listening on http://localhost:${PORT}`);
+  console.log(`Gateway HTTP: ${GATEWAY_HTTP}`);
+  console.log(`Gateway WS: ${GATEWAY_WS}`);
+  
+  // 尝试预先建立 WebSocket 连接（不阻塞服务器启动）
+  gatewayClient.connect().then(() => {
+    console.log('✅ WebSocket pre-connected to Gateway');
+  }).catch((e) => {
+    console.log('⚠️  WebSocket pre-connect failed (will retry on demand):', e.message);
+  });
+});
+
+// 保持服务器运行
+server.on('error', (err) => {
+  console.error('Server error:', err);
 });
