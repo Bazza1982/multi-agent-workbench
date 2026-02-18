@@ -126,33 +126,24 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand, custom
       {pct >= 70 && (
         <div className={`memory-alert ${pct >= 85 ? 'critical' : 'warning'}`}>
           <span className="alert-text">
-            {pct >= 85 ? '⚠️ Context 即将满！请立即保存记忆' : '💡 Context > 70%，建议保存记忆'}
+            {pct >= 85 ? '⚠️ Context 即将满！' : '💡 Context > 70%'}
           </span>
+          <button 
+            className="memory-btn-inline" 
+            onClick={() => onSend(agent, `Context 已用 ${pct.toFixed(0)}%！请立即：
+1. 写详细日记到 memory/YYYY-MM-DD.md，记录：
+   - 今天做了什么（完整过程）
+   - 重要决策和原因
+   - 遇到的问题和解决方案
+   - 工作进度（做到哪里、下一步）
+2. 更新 MEMORY.md（如有重要长期记忆）
+3. 完成后回复"可以 compact 了"`, null)}
+            title="一键保存记忆并准备压缩"
+          >
+            💾 一键保存并压缩
+          </button>
         </div>
       )}
-      <div className="memory-actions">
-        <button 
-          className="memory-btn" 
-          onClick={() => onSend(agent, '写日记，详细记录最近对话的重点内容和决策', null)}
-          title="让 Agent 写日记保存记忆"
-        >
-          📝 写日记
-        </button>
-        <button 
-          className="memory-btn" 
-          onClick={() => onSend(agent, '保存当前工作进度到日记，包括：正在做什么、做到哪里、下一步计划', null)}
-          title="保存工作进度"
-        >
-          💾 保存进度
-        </button>
-        <button 
-          className="memory-btn compact" 
-          onClick={() => onSend(agent, 'Context 快满了！请立即：1) 写详细日记保存所有重要信息 2) 完成后告诉我可以 compact 了', null)}
-          title="准备压缩记忆"
-        >
-          🗜️ 压缩准备
-        </button>
-      </div>
 
       <details>
         <summary>💭 Thinking / Controls</summary>

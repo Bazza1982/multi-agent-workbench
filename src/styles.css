@@ -68,13 +68,13 @@ select { background: #0f1116; color: var(--text); border: 1px solid var(--border
   gap: 6px;
 }
 .memory-alert.warning {
-  background: rgba(241, 196, 15, 0.15);
-  border: 1px solid rgba(241, 196, 15, 0.4);
+  background: rgba(241, 196, 15, 0.12);
+  border: 1px solid rgba(241, 196, 15, 0.3);
   color: #f1c40f;
 }
 .memory-alert.critical {
-  background: rgba(231, 76, 60, 0.15);
-  border: 1px solid rgba(231, 76, 60, 0.4);
+  background: rgba(231, 76, 60, 0.12);
+  border: 1px solid rgba(231, 76, 60, 0.3);
   color: #e74c3c;
   animation: pulse 1.5s ease-in-out infinite;
 }
@@ -82,34 +82,21 @@ select { background: #0f1116; color: var(--text); border: 1px solid var(--border
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
 }
-.memory-actions {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-.memory-btn {
+.memory-btn-inline {
   font-size: 11px;
-  padding: 4px 8px;
-  background: #1a2030;
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
+  padding: 3px 8px;
+  background: rgba(46, 204, 113, 0.2);
+  border: 1px solid rgba(46, 204, 113, 0.5);
+  color: #2ecc71;
+  border-radius: 4px;
   cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
+  margin-left: auto;
 }
-.memory-btn:hover {
-  background: #242d40;
-  border-color: #4a9eff;
-}
-.memory-btn.compact {
-  background: #2d1a1a;
-  border-color: #6b3030;
-}
-.memory-btn.compact:hover {
-  background: #3d2020;
-  border-color: #e74c3c;
+.memory-btn-inline:hover {
+  background: rgba(46, 204, 113, 0.3);
+  border-color: #2ecc71;
 }
 
 @media (max-width: 1200px) { .grid-3,.grid-6,.grid-9 { grid-template-columns: repeat(2,1fr); } }
