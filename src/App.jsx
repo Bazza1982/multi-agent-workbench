@@ -129,7 +129,7 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand, custom
             {pct >= 85 ? '⚠️ Context 即将满！' : '💡 Context > 70%'}
           </span>
           <button 
-            className="memory-btn-inline" 
+            className="memory-btn-inline save" 
             onClick={() => onSend(agent, `Context 已用 ${pct.toFixed(0)}%！请立即：
 1. 写详细日记到 memory/YYYY-MM-DD.md，记录：
    - 今天做了什么（完整过程）
@@ -138,9 +138,28 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand, custom
    - 工作进度（做到哪里、下一步）
 2. 更新 MEMORY.md（如有重要长期记忆）
 3. 完成后回复"可以 compact 了"`, null)}
-            title="一键保存记忆并准备压缩"
+            title="发送保存记忆指令"
           >
-            💾 一键保存并压缩
+            💾 保存记忆
+          </button>
+          <button 
+            className="memory-btn-inline compact" 
+            onClick={async () => {
+              try {
+                const resp = await fetch(`/api/compact/${agent.id}`, { method: 'POST' });
+                const result = await resp.json();
+                if (result.ok) {
+                  alert('✅ Compact 命令已发送！');
+                } else {
+                  alert('❌ Compact 失败: ' + (result.error || 'unknown'));
+                }
+              } catch (e) {
+                alert('❌ Compact 请求失败: ' + e.message);
+              }
+            }}
+            title="执行 /compact 压缩上下文"
+          >
+            🗜️ 压缩
           </button>
         </div>
       )}

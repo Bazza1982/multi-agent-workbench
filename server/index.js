@@ -558,6 +558,71 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Compact API - 通过 WebSocket 发送 /compact 命令给 Gateway
+app.post('/api/compact/:agentId', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const agent = getAgentMap().get(agentId);
+    if (!agent) {
+      return res.status(404).json({ error: 'agent not found' });
+    }
+
+    debugLog('\n=== /api/compact ===');
+    debugLog('agentId:', agentId);
+    debugLog('sessionKey:', agent.sessionKey);
+
+    // 尝试通过 WebSocket 发送 /compact 命令
+    try {
+      await gatewayClient.connect();
+      
+      // 使用 chat.send 方法发送 /compact 命令
+      const result = await gatewayClient.request('chat.send', {
+        sessionKey: agent.sessionKey,
+        message: '/compact',
+      }, 30000);
+      
+      debugLog('Compact via WebSocket success:', result);
+      return res.json({ ok: true, method: 'websocket', result });
+    } catch (wsError) {
+      debugLog('WebSocket chat.send failed:', wsError.message);
+      
+      // WebSocket 失败，尝试 HTTP API
+      // 发送 /compact 作为普通消息，Gateway 会解析斜杠命令
+      const token = readGatewayToken();
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'x-openclaw-session-key': agent.sessionKey,
+        'x-openclaw-agent-id': agentId,
+      };
+
+      const payload = {
+        model: `openclaw:${agentId}`,
+        stream: false,
+        messages: [{ role: 'user', content: '/compact' }],
+      };
+
+      const resp = await fetch(`${GATEWAY_HTTP}/v1/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      const text = await resp.text();
+      debugLog('HTTP compact response:', text.slice(0, 300));
+      
+      if (resp.ok) {
+        return res.json({ ok: true, method: 'http', response: text.slice(0, 500) });
+      } else {
+        return res.status(resp.status).json({ ok: false, method: 'http', error: text });
+      }
+    }
+  } catch (error) {
+    debugLog('Compact error:', error);
+    res.status(500).json({ error: String(error.message || error) });
+  }
+});
+
 // 启动服务器
 const server = app.listen(PORT, () => {
   console.log(`Workbench API listening on http://localhost:${PORT}`);
