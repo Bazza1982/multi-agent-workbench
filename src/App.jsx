@@ -122,6 +122,38 @@ function AgentPanel({ agent, session, state, setState, onSend, onCommand, custom
       </div>
       <div className="progress"><div className={`bar ${pctColor(pct)}`} style={{ width: `${Math.min(100, pct)}%` }} /></div>
 
+      {/* 记忆管理区域 */}
+      {pct >= 70 && (
+        <div className={`memory-alert ${pct >= 85 ? 'critical' : 'warning'}`}>
+          <span className="alert-text">
+            {pct >= 85 ? '⚠️ Context 即将满！请立即保存记忆' : '💡 Context > 70%，建议保存记忆'}
+          </span>
+        </div>
+      )}
+      <div className="memory-actions">
+        <button 
+          className="memory-btn" 
+          onClick={() => onSend(agent, '写日记，详细记录最近对话的重点内容和决策', null)}
+          title="让 Agent 写日记保存记忆"
+        >
+          📝 写日记
+        </button>
+        <button 
+          className="memory-btn" 
+          onClick={() => onSend(agent, '保存当前工作进度到日记，包括：正在做什么、做到哪里、下一步计划', null)}
+          title="保存工作进度"
+        >
+          💾 保存进度
+        </button>
+        <button 
+          className="memory-btn compact" 
+          onClick={() => onSend(agent, 'Context 快满了！请立即：1) 写详细日记保存所有重要信息 2) 完成后告诉我可以 compact 了', null)}
+          title="准备压缩记忆"
+        >
+          🗜️ 压缩准备
+        </button>
+      </div>
+
       <details>
         <summary>💭 Thinking / Controls</summary>
         <div className="controls-row">
