@@ -35,12 +35,12 @@ const MODEL_CONTEXT_WINDOWS = {
   'gpt-5.3': 128000,
   'gpt-5.1-codex': 128000,
   'gpt-5.2-codex': 128000,
-  'gpt-5.3-codex': 128000,
+  'gpt-5.3-codex': 400000,  // Fixed: GPT-5.3-codex has 400k context window
   // Kimi
   'kimi-k2': 128000,
-  'kimi-k2.5': 128000,
+  'kimi-k2.5': 256000,  // Fixed: Kimi K2.5 has 256k context window
   // GLM
-  'glm-5': 128000,
+  'glm-5': 200000,  // Fixed: GLM-5 has 200k context window
   // Default fallback
   'default': 200000,
 };
